@@ -396,179 +396,195 @@ def make_csv_excel_friendly(rows: List[Tuple[str, int]]) -> bytes:
 # -------------------------
 # UI (миниатюра + открыть полностью)
 # -------------------------
-HOME_HTML = "\n".join([
-    "<!doctype html>",
-    "<html lang='ru'>",
-    "<head>",
-    "  <meta charset='utf-8' />",
-    "  <meta name='viewport' content='width=device-width, initial-scale=1' />",
-    "  <title>PDF → CSV</title>",
-    "  <style>",
-    "    :root { --bg:#0b0f17; --card:#121a2a; --text:#e9eefc; --muted:#a8b3d6; --border:rgba(255,255,255,.08); --btn:#4f7cff; }",
-    "    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;",
-    "           background: radial-gradient(1200px 600px at 20% 10%, #18234a 0%, var(--bg) 55%); color: var(--text); }",
-    "    .wrap { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding: 28px; }",
-    "    .card { width:min(900px, 100%); background: rgba(18,26,42,.92); border: 1px solid var(--border);",
-    "            border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }",
-    "    .top { display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; }",
-    "    h1 { margin:0; font-size: 28px; letter-spacing: .2px; }",
-    "    .hint { margin: 8px 0 0; color: var(--muted); font-size: 14px; }",
-    "    .badge { font-size: 12px; color: var(--muted); border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; }",
-    "    .row { margin-top: 18px; display:flex; gap: 12px; align-items:center; flex-wrap:wrap; }",
-    "    .file { display:flex; align-items:center; gap:10px; padding: 10px 12px; border: 1px dashed var(--border);",
-    "            border-radius: 14px; background: rgba(255,255,255,.02); }",
-    "    button { padding: 10px 14px; border: 0; border-radius: 14px; cursor: pointer; font-weight: 800;",
-    "             background: var(--btn); color: #0b1020; }",
-    "    button:disabled { opacity: .55; cursor:not-allowed; }",
-    "    .status { margin-top: 14px; font-size: 14px; color: var(--muted); white-space: pre-wrap; }",
-    "    .status.ok { color: #79ffa8; }",
-    "    .status.err { color: #ff7b8a; }",
-    "    .help { margin-top: 16px; }",
-    "    .helphead { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }",
-    "    .helptitle { font-weight: 700; color: var(--text); }",
-    "    .openfull { font-size: 13px; color: var(--muted); text-decoration: underline; cursor: pointer; }",
-    "    .thumb { margin-top: 10px; border: 1px solid var(--border); border-radius: 14px; overflow:hidden;",
-    "             background: rgba(255,255,255,.02); cursor: zoom-in; }",
-    "    .thumb video { display:block; width:100%; height:auto; max-height: 260px; object-fit: cover; object-position: top; }",
-    "    /* modal */",
-    "    .modal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display:none; align-items:center; justify-content:center; padding: 18px; }",
-    "    .modal.open { display:flex; }",
-    "    .modalcard { width:min(1200px, 100%); background: rgba(18,26,42,.96); border: 1px solid var(--border);",
-    "                 border-radius: 18px; overflow:hidden; box-shadow: 0 30px 100px rgba(0,0,0,.6); }",
-    "    .modalbar { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }",
-    "    .modalbar .t { color: var(--text); font-weight: 700; font-size: 14px; }",
-    "    .close { background: transparent; color: var(--muted); border: 1px solid var(--border);",
-    "             border-radius: 12px; padding: 8px 10px; cursor:pointer; font-weight: 700; }",
-    "    .modalbody { background: #0b0f17; }",
-    "    .modalbody video { display:block; width:100%; height:auto; }",
-    "  </style>",
-    "</head>",
-    "<body>",
-    "  <div class='wrap'>",
-    "    <div class='card'>",
-    "      <div class='top'>",
-    "        <div>",
-    "          <h1>PDF → CSV</h1>",
-    "          <div class='hint'>Загрузите PDF и скачайте CSV для импорта.</div>",
-    "        </div>",
-    "        <div class='badge'>CSV: ; • UTF-8 • BOM</div>",
-    "      </div>",
-    "      <div class='row'>",
-    "        <div class='file'>",
-    "          <input id='pdf' type='file' accept='application/pdf,.pdf' />",
-    "        </div>",
-    "        <button id='btn' disabled>Скачать CSV</button>",
-    "      </div>",
-    "      <div id='status' class='status'></div>",
-    "",
-    "      <div class='help' id='help' style='display:none;'>",
-    "        <div class='helphead'>",
-    "          <div class='helptitle'>Мини-инструкция</div>",
-    "          <div class='openfull' id='openfull'>Открыть полностью</div>",
-    "        </div>",
-    "        <div class='thumb' id='thumb'>",
-    "          <img src='/instruction.mp4' alt='Инструкция' />",
-    "        </div>",
-    "      </div>",
-    "    </div>",
-    "  </div>",
-    "",
-    "  <div class='modal' id='modal' aria-hidden='true'>",
-    "    <div class='modalcard'>",
-    "      <div class='modalbar'>",
-    "        <div class='t'>Инструкция</div>",
-    "        <button class='close' id='close'>Закрыть</button>",
-    "      </div>",
-    "      <div class='modalbody'>",
-    "        <video src='/instruction.mp4' controls playsinline preload='auto'></video",
-    "      </div>",
-    "    </div>",
-    "  </div>",
-    "",
-    "  <div class='corner' id='counter'>Конвертаций: …</div>
+HOME_HTML = """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF → CSV</title>
+  <style>
+    :root { --bg:#0b0f17; --card:#121a2a; --text:#e9eefc; --muted:#a8b3d6; --border:rgba(255,255,255,.08); --btn:#4f7cff; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+           background: radial-gradient(1200px 600px at 20% 10%, #18234a 0%, var(--bg) 55%); color: var(--text); }
+    .wrap { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding: 28px; }
+    .card { width:min(900px, 100%); background: rgba(18,26,42,.92); border: 1px solid var(--border);
+            border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
+    .top { display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+    h1 { margin:0; font-size: 28px; letter-spacing: .2px; }
+    .hint { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+    .badge { font-size: 12px; color: var(--muted); border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; }
+    .row { margin-top: 18px; display:flex; gap: 12px; align-items:center; flex-wrap:wrap; }
+    .file { display:flex; align-items:center; gap:10px; padding: 10px 12px; border: 1px dashed var(--border);
+            border-radius: 14px; background: rgba(255,255,255,.02); }
+    button { padding: 10px 14px; border: 0; border-radius: 14px; cursor: pointer; font-weight: 800;
+             background: var(--btn); color: #0b1020; }
+    button:disabled { opacity: .55; cursor:not-allowed; }
+    .status { margin-top: 14px; font-size: 14px; color: var(--muted); white-space: pre-wrap; }
+    .status.ok { color: #79ffa8; }
+    .status.err { color: #ff7b8a; }
+    .help { margin-top: 16px; }
+    .helphead { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    .helptitle { font-weight: 700; color: var(--text); }
+    .openfull { font-size: 13px; color: var(--muted); text-decoration: underline; cursor: pointer; }
+    .thumb { margin-top: 10px; border: 1px solid var(--border); border-radius: 14px; overflow:hidden;
+             background: rgba(255,255,255,.02); cursor: zoom-in; }
+    .thumb video { display:block; width:100%; height:auto; max-height: 260px; object-fit: cover; object-position: top; }
+    /* modal */
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display:none; align-items:center; justify-content:center; padding: 18px; }
+    .modal.open { display:flex; }
+    .modalcard { width:min(1200px, 100%); background: rgba(18,26,42,.96); border: 1px solid var(--border);
+                 border-radius: 18px; overflow:hidden; box-shadow: 0 30px 100px rgba(0,0,0,.6); }
+    .modalbar { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    .modalbar .t { color: var(--text); font-weight: 700; font-size: 14px; }
+    .close { background: transparent; color: var(--muted); border: 1px solid var(--border);
+             border-radius: 12px; padding: 8px 10px; cursor:pointer; font-weight: 700; }
+    .modalbody { background: #0b0f17; }
+    .modalbody video { display:block; width:100%; height:auto; }
+    .corner { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--muted); opacity: .9; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="top">
+        <div>
+          <h1>PDF → CSV</h1>
+          <div class="hint">Загрузите PDF и скачайте CSV для импорта.</div>
+        </div>
+        <div class="badge">CSV: ; • UTF-8 • BOM</div>
+      </div>
 
-  <script>",
-    "    const input = document.getElementById('pdf');",
-    "    const btn = document.getElementById('btn');",
-    "    const statusEl = document.getElementById('status');",
-    "    const help = document.getElementById('help');",
-    "    const thumb = document.getElementById('thumb');",
-    "    const openfull = document.getElementById('openfull');",
-    "    const modal = document.getElementById('modal');",
-    "    const closeBtn = document.getElementById('close');",
-    "",
-    "    fetch(\'/instruction.mp4\', { method: \'HEAD\' }).then(r => { if (r.ok) { help.style.display = \'block\'; try { const tv = document.querySelector(\'#thumb video\'); if (tv) tv.play().catch(()=>{}); } catch(e) {} } });",
-    "    async function loadCounter(){",
-    "      try {",
-    "        const r = await fetch(\'/stats\');",
-    "        if (!r.ok) return;",
-    "        const j = await r.json();",
-    "        if (typeof j.conversions === \'number\') {",
-    "          document.getElementById(\'counter\').textContent = \'Конвертаций: \' + j.conversions;",
-    "        }",
-    "      } catch(e) {}",
-    "    }",
-    "    loadCounter();",
-    "",
-    "    function ok(msg){ statusEl.className='status ok'; statusEl.textContent=msg; }",
-    "    function err(msg){ statusEl.className='status err'; statusEl.textContent=msg; }",
-    "    function neutral(msg){ statusEl.className='status'; statusEl.textContent=msg||''; }",
-    "",
-    "    function openModal(){ modal.classList.add('open'); modal.setAttribute('aria-hidden','false'); }",
-    "    function closeModal(){",
-    "      modal.classList.remove(\'open\');",
-    "      modal.setAttribute(\'aria-hidden\',\'true\');",
-    "      try { const v = modal.querySelector(\'video\'); if (v) { v.pause(); v.currentTime = 0; } } catch(e) {}",
-    "    }",
-    "",
-    "    thumb.addEventListener('click', openModal);",
-    "    openfull.addEventListener('click', openModal);",
-    "    closeBtn.addEventListener('click', closeModal);",
-    "    modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });",
-    "    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });",
-    "",
-    "    input.addEventListener('change', () => {",
-    "      const f = input.files && input.files[0];",
-    "      btn.disabled = !f;",
-    "      neutral(f ? ('Выбран файл: ' + f.name) : '');",
-    "    });",
-    "",
-    "    btn.addEventListener('click', async () => {",
-    "      const f = input.files && input.files[0];",
-    "      if (!f) return;",
-    "      btn.disabled = true;",
-    "      neutral('Обработка…');",
-    "      try {",
-    "        const fd = new FormData();",
-    "        fd.append('file', f);",
-    "        const resp = await fetch('/extract', { method: 'POST', body: fd });",
-    "        if (!resp.ok) {",
-    "          let text = await resp.text();",
-    "          try { const j = JSON.parse(text); if (j.detail) text = String(j.detail); } catch(e) {}",
-    "          throw new Error(text || ('HTTP ' + resp.status));",
-    "        }",
-    "        const blob = await resp.blob();",
-    "        const base = (f.name || 'items.pdf').replace(/\\.pdf$/i, '');",
-    "        const filename = base + '.csv';",
-    "        const url = URL.createObjectURL(blob);",
-    "        const a = document.createElement('a');",
-    "        a.href = url;",
-    "        a.download = filename;",
-    "        document.body.appendChild(a);",
-    "        a.click();",
-    "        a.remove();",
-    "        URL.revokeObjectURL(url);",
-    "        ok('Готово! Файл скачан: ' + filename);",
-    "      } catch(e) {",
-    "        err('Ошибка: ' + String(e.message || e));",
-    "      } finally {",
-    "        btn.disabled = !(input.files && input.files[0]);",
-    "      }",
-    "    });",
-    "  </script>",
-    "</body>",
-    "</html>",
-])
+      <div class="row">
+        <div class="file">
+          <input id="pdf" type="file" accept="application/pdf,.pdf" />
+        </div>
+        <button id="btn" disabled>Скачать CSV</button>
+      </div>
+
+      <div id="status" class="status"></div>
+
+      <div class="help" id="help" style="display:none;">
+        <div class="helphead">
+          <div class="helptitle">Мини-инструкция</div>
+          <div class="openfull" id="openfull">Открыть полностью</div>
+        </div>
+        <div class="thumb" id="thumb">
+          <video src="/instruction.mp4" muted playsinline preload="metadata"></video>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="corner" id="counter">Конвертаций: …</div>
+
+  <div class="modal" id="modal" aria-hidden="true">
+    <div class="modalcard">
+      <div class="modalbar">
+        <div class="t">Инструкция</div>
+        <button class="close" id="close">Закрыть</button>
+      </div>
+      <div class="modalbody">
+        <video src="/instruction.mp4" controls playsinline preload="auto"></video>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const input = document.getElementById('pdf');
+    const btn = document.getElementById('btn');
+    const statusEl = document.getElementById('status');
+    const help = document.getElementById('help');
+    const thumb = document.getElementById('thumb');
+    const openfull = document.getElementById('openfull');
+    const modal = document.getElementById('modal');
+    const closeBtn = document.getElementById('close');
+
+    function ok(msg){ statusEl.className='status ok'; statusEl.textContent=msg; }
+    function err(msg){ statusEl.className='status err'; statusEl.textContent=msg; }
+    function neutral(msg){ statusEl.className='status'; statusEl.textContent=msg||''; }
+
+    function openModal(){
+      modal.classList.add('open');
+      modal.setAttribute('aria-hidden','false');
+      try { const v = modal.querySelector('video'); if (v) v.play().catch(()=>{}); } catch(e) {}
+    }
+    function closeModal(){
+      modal.classList.remove('open');
+      modal.setAttribute('aria-hidden','true');
+      try { const v = modal.querySelector('video'); if (v) { v.pause(); v.currentTime = 0; } } catch(e) {}
+    }
+
+    thumb.addEventListener('click', openModal);
+    openfull.addEventListener('click', openModal);
+    closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+    // show video help if file exists
+    fetch('/instruction.mp4', { method: 'HEAD' }).then(r => {
+      if (r.ok) {
+        help.style.display = 'block';
+        try { const tv = document.querySelector('#thumb video'); if (tv) tv.play().catch(()=>{}); } catch(e) {}
+      }
+    });
+
+    async function loadCounter(){
+      try {
+        const r = await fetch('/stats');
+        if (!r.ok) return;
+        const j = await r.json();
+        if (typeof j.conversions === 'number') {
+          document.getElementById('counter').textContent = 'Конвертаций: ' + j.conversions;
+        }
+      } catch(e) {}
+    }
+    loadCounter();
+
+    input.addEventListener('change', () => {
+      const f = input.files && input.files[0];
+      btn.disabled = !f;
+      neutral(f ? ('Выбран файл: ' + f.name) : '');
+    });
+
+    btn.addEventListener('click', async () => {
+      const f = input.files && input.files[0];
+      if (!f) return;
+      btn.disabled = true;
+      neutral('Обработка…');
+      try {
+        const fd = new FormData();
+        fd.append('file', f);
+        const resp = await fetch('/extract', { method: 'POST', body: fd });
+        if (!resp.ok) {
+          let text = await resp.text();
+          try { const j = JSON.parse(text); if (j.detail) text = String(j.detail); } catch(e) {}
+          throw new Error(text || ('HTTP ' + resp.status));
+        }
+        const blob = await resp.blob();
+        const base = (f.name || 'items.pdf').replace(/\.pdf$/i, '');
+        const filename = base + '.csv';
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        ok('Готово! Файл скачан: ' + filename);
+        loadCounter();
+      } catch(e) {
+        err('Ошибка: ' + String(e.message || e));
+      } finally {
+        btn.disabled = !(input.files && input.files[0]);
+      }
+    });
+  </script>
+</body>
+</html>
+"""
+
 
 
 @app.get("/stats")
