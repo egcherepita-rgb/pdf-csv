@@ -139,7 +139,6 @@ def get_counter() -> int:
     return _read_counter()
 
 # Картинка-инструкция (положи рядом с main.py)
- (положи рядом с main.py)
 INSTRUCTION_VIDEO_PATH = os.getenv("INSTRUCTION_VIDEO_PATH", "instruction.mp4")
 
 
