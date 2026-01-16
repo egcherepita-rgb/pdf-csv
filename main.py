@@ -14,7 +14,6 @@ try:
 except Exception:
     openpyxl = None
 
-
 app = FastAPI(title="PDF → CSV (артикул / наименование / всего / категория)", version="3.7.0")
 
 # -------------------------
@@ -42,12 +41,10 @@ RX_DIMS_ANYWHERE = re.compile(
     re.IGNORECASE,
 )
 
-
 def normalize_space(s: str) -> str:
     s = (s or "").replace("\u00a0", " ")
     s = re.sub(r"\s+", " ", s)
     return s.strip()
-
 
 def normalize_key(name: str) -> str:
     s = normalize_space(name).lower()
@@ -56,12 +53,10 @@ def normalize_key(name: str) -> str:
     s = normalize_space(s)
     return s
 
-
 def strip_dims_anywhere(name: str) -> str:
     name = normalize_space(name)
     name2 = RX_DIMS_ANYWHERE.sub(" ", name)
     return normalize_space(name2)
-
 
 # -------------------------
 # Артикулы (Art.xlsx)
@@ -103,7 +98,6 @@ def load_article_map() -> Tuple[Dict[str, str], str]:
 
     return m, "ok"
 
-
 ARTICLE_MAP, ARTICLE_MAP_STATUS = load_article_map()
 
 CATEGORY_VALUE = 2
@@ -139,8 +133,6 @@ def get_counter() -> int:
     return _read_counter()
 
 # Картинка-инструкция (положи рядом с main.py)
-INSTRUCTION_VIDEO_PATH = os.getenv("INSTRUCTION_VIDEO_PATH", "instruction.mp4")
-
 
 # -------------------------
 # PDF parsing helpers
@@ -149,7 +141,6 @@ def split_lines(page: fitz.Page) -> List[str]:
     txt = page.get_text("text") or ""
     lines = [normalize_space(x) for x in txt.splitlines()]
     return [x for x in lines if x]
-
 
 def is_noise(line: str) -> bool:
     low = (line or "").strip().lower()
@@ -167,7 +158,6 @@ def is_noise(line: str) -> bool:
         return True
     return False
 
-
 def is_totals_block(line: str) -> bool:
     low = (line or "").strip().lower()
     return (
@@ -177,7 +167,6 @@ def is_totals_block(line: str) -> bool:
         or low.startswith("телефон:")
         or low.startswith("email")
     )
-
 
 def money_to_number(line: str) -> int:
     # "40 347 ₽" -> 40347
@@ -189,7 +178,6 @@ def money_to_number(line: str) -> int:
         return int(float(s))
     except Exception:
         return -1
-
 
 def is_project_total_only(line: str, prev_line: str = "") -> bool:
     """
@@ -209,11 +197,9 @@ def is_project_total_only(line: str, prev_line: str = "") -> bool:
     v = money_to_number(line)
     return v >= 10000
 
-
 def is_header_token(line: str) -> bool:
     low = normalize_space(line).lower().replace("–", "-").replace("—", "-")
     return low in {"фото", "товар", "габариты", "вес", "цена за шт", "кол-во", "сумма"}
-
 
 def looks_like_dim_or_weight(line: str) -> bool:
     if RX_WEIGHT.search(line):
@@ -222,14 +208,12 @@ def looks_like_dim_or_weight(line: str) -> bool:
         return True
     return False
 
-
 def looks_like_money_or_qty(line: str) -> bool:
     if RX_MONEY_LINE.fullmatch(line):
         return True
     if RX_INT.fullmatch(line):
         return True
     return False
-
 
 def clean_name_from_buffer(buf: List[str]) -> str:
     """
@@ -251,7 +235,6 @@ def clean_name_from_buffer(buf: List[str]) -> str:
     name = re.sub(r"^Товар\s*", "", name, flags=re.IGNORECASE).strip()
     name = strip_dims_anywhere(name)
     return name
-
 
 # -------------------------
 # Main parser (объединённая логика)
@@ -370,7 +353,6 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
 
     return list(ordered.items()), stats
 
-
 # -------------------------
 # CSV output (Excel-friendly)
 # -------------------------
@@ -391,7 +373,6 @@ def make_csv_excel_friendly(rows: List[Tuple[str, int]]) -> bytes:
         writer.writerow([art, name, qty, CATEGORY_VALUE])
 
     return out.getvalue().encode("utf-8-sig")  # UTF-8 BOM
-
 
 # -------------------------
 # UI (миниатюра + открыть полностью)
@@ -422,25 +403,7 @@ HOME_HTML = """<!doctype html>
     .status { margin-top: 14px; font-size: 14px; color: var(--muted); white-space: pre-wrap; }
     .status.ok { color: #79ffa8; }
     .status.err { color: #ff7b8a; }
-    .help { margin-top: 16px; }
-    .helphead { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
-    .helptitle { font-weight: 700; color: var(--text); }
-    .openfull { font-size: 13px; color: var(--muted); text-decoration: underline; cursor: pointer; }
-    .thumb { margin-top: 10px; border: 1px solid var(--border); border-radius: 14px; overflow:hidden;
-             background: rgba(255,255,255,.02); cursor: zoom-in; }
-    .thumb video { display:block; width:100%; height:auto; max-height: 260px; object-fit: cover; object-position: top; }
-    /* modal */
-    .modal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display:none; align-items:center; justify-content:center; padding: 18px; }
-    .modal.open { display:flex; }
-    .modalcard { width:min(1200px, 100%); background: rgba(18,26,42,.96); border: 1px solid var(--border);
-                 border-radius: 18px; overflow:hidden; box-shadow: 0 30px 100px rgba(0,0,0,.6); }
-    .modalbar { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-    .modalbar .t { color: var(--text); font-weight: 700; font-size: 14px; }
-    .close { background: transparent; color: var(--muted); border: 1px solid var(--border);
-             border-radius: 12px; padding: 8px 10px; cursor:pointer; font-weight: 700; }
-    .modalbody { background: #0b0f17; }
-    .modalbody video { display:block; width:100%; height:auto; }
-    .corner { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--muted); opacity: .9; }
+.corner { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--muted); opacity: .9; }
   </style>
 </head>
 <body>
@@ -462,11 +425,7 @@ HOME_HTML = """<!doctype html>
       </div>
 
       <div id="status" class="status"></div>
-
-      <div class="help" id="help" style="display:none;">
-        <div class="helphead">
-          <div class="helptitle">Мини-инструкция</div>
-          <div class="openfull" id="openfull">Открыть полностью</div>
+<div class="openfull" id="openfull">Открыть полностью</div>
         </div>
         <div class="thumb" id="thumb">
           <video src="/instruction.mp4" muted playsinline preload="metadata"></video>
@@ -475,13 +434,8 @@ HOME_HTML = """<!doctype html>
     </div>
   </div>
 
-  <div class="corner" id="counter">Конвертаций: …</div>
-
-  <div class="modal" id="modal" aria-hidden="true">
-    <div class="modalcard">
-      <div class="modalbar">
-        <div class="t">Инструкция</div>
-        <button class="close" id="close">Закрыть</button>
+  <div class="corner" id="counter">…</div>
+<button class="close" id="close">Закрыть</button>
       </div>
       <div class="modalbody">
         <video src="/instruction.mp4" controls playsinline preload="auto"></video>
@@ -493,40 +447,11 @@ HOME_HTML = """<!doctype html>
     const input = document.getElementById('pdf');
     const btn = document.getElementById('btn');
     const statusEl = document.getElementById('status');
-    const help = document.getElementById('help');
-    const thumb = document.getElementById('thumb');
-    const openfull = document.getElementById('openfull');
-    const modal = document.getElementById('modal');
-    const closeBtn = document.getElementById('close');
-
+                    
     function ok(msg){ statusEl.className='status ok'; statusEl.textContent=msg; }
     function err(msg){ statusEl.className='status err'; statusEl.textContent=msg; }
     function neutral(msg){ statusEl.className='status'; statusEl.textContent=msg||''; }
-
-    function openModal(){
-      modal.classList.add('open');
-      modal.setAttribute('aria-hidden','false');
-      try { const v = modal.querySelector('video'); if (v) v.play().catch(()=>{}); } catch(e) {}
     }
-    function closeModal(){
-      modal.classList.remove('open');
-      modal.setAttribute('aria-hidden','true');
-      try { const v = modal.querySelector('video'); if (v) { v.pause(); v.currentTime = 0; } } catch(e) {}
-    }
-
-    thumb.addEventListener('click', openModal);
-    openfull.addEventListener('click', openModal);
-    closeBtn.addEventListener('click', closeModal);
-    modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
-
-    // show video help if file exists
-    fetch('/instruction.mp4', { method: 'HEAD' }).then(r => {
-      if (r.ok) {
-        help.style.display = 'block';
-        try { const tv = document.querySelector('#thumb video'); if (tv) tv.play().catch(()=>{}); } catch(e) {}
-      }
-    });
 
     async function loadCounter(){
       try {
@@ -534,7 +459,7 @@ HOME_HTML = """<!doctype html>
         if (!r.ok) return;
         const j = await r.json();
         if (typeof j.conversions === 'number') {
-          document.getElementById('counter').textContent = 'Конвертаций: ' + j.conversions;
+          document.getElementById('counter').textContent = String(j.conversions);
         }
       } catch(e) {}
     }
@@ -585,12 +510,9 @@ HOME_HTML = """<!doctype html>
 </html>
 """
 
-
-
 @app.get("/stats")
 def stats():
     return {"conversions": get_counter()}
-
 
 @app.get("/health")
 def health():
@@ -599,24 +521,12 @@ def health():
         "article_map_size": len(ARTICLE_MAP),
         "article_map_status": ARTICLE_MAP_STATUS,
         "category_value": CATEGORY_VALUE,
-        "instruction_video_exists": os.path.exists(INSTRUCTION_VIDEO_PATH),
         "conversions": get_counter(),
     }
-
 
 @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def home():
     return HOME_HTML
-
-
-@app.get("/instruction.mp4")
-def instruction_video():
-    if not os.path.exists(INSTRUCTION_VIDEO_PATH):
-        raise HTTPException(status_code=404, detail="instruction.mp4 not found")
-    return FileResponse(INSTRUCTION_VIDEO_PATH, media_type="video/mp4")
-
-
-
 
 @app.post("/extract")
 async def extract(file: UploadFile = File(...)):
