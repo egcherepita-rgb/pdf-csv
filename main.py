@@ -150,31 +150,77 @@ def get_counter() -> int:
 
 
 # -------------------------
-# Async jobs (progress)
+# Async jobs (progress) — file-based storage (OK with gunicorn -w 2)
 # -------------------------
-JOBS: Dict[str, dict] = {}
-JOBS_LOCK = threading.Lock()
-JOB_TTL_SEC = 30 * 60  # 30 минут хранить результаты
+JOB_DIR = os.getenv("JOB_DIR", "/tmp/pdf2csv_jobs")
+JOB_TTL_SEC = int(os.getenv("JOB_TTL_SEC", str(30 * 60)))  # 30 минут
 
+def _ensure_job_dir():
+    os.makedirs(JOB_DIR, exist_ok=True)
+
+def _job_json_path(job_id: str) -> str:
+    return os.path.join(JOB_DIR, f"{job_id}.json")
+
+def _job_result_path(job_id: str) -> str:
+    return os.path.join(JOB_DIR, f"{job_id}.csv")
+
+def _write_json_atomic(path: str, data: dict) -> None:
+    _ensure_job_dir()
+    tmp = path + ".tmp"
+    import json
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+def _read_json(path: str) -> dict | None:
+    import json
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 def _cleanup_jobs():
+    _ensure_job_dir()
     now = time.time()
-    with JOBS_LOCK:
-        to_del = [k for k, v in JOBS.items() if now - v.get("created_at", now) > JOB_TTL_SEC]
-        for k in to_del:
-            JOBS.pop(k, None)
-
+    for name in os.listdir(JOB_DIR):
+        if not (name.endswith(".json") or name.endswith(".csv")):
+            continue
+        p = os.path.join(JOB_DIR, name)
+        try:
+            if now - os.path.getmtime(p) > JOB_TTL_SEC:
+                os.remove(p)
+        except Exception:
+            pass
 
 def _set_job(job_id: str, **kwargs):
-    with JOBS_LOCK:
-        j = JOBS.get(job_id, {})
-        j.update(kwargs)
-        JOBS[job_id] = j
+    _cleanup_jobs()
+    path = _job_json_path(job_id)
+    data = _read_json(path) or {}
+    data.update(kwargs)
+    # “touch” по mtime через перезапись
+    _write_json_atomic(path, data)
 
+def _get_job(job_id: str) -> dict | None:
+    _cleanup_jobs()
+    return _read_json(_job_json_path(job_id))
 
-def _get_job(job_id: str):
-    with JOBS_LOCK:
-        return JOBS.get(job_id)
+def _set_job_result(job_id: str, csv_bytes: bytes):
+    _cleanup_jobs()
+    _ensure_job_dir()
+    p = _job_result_path(job_id)
+    tmp = p + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(csv_bytes)
+    os.replace(tmp, p)
+
+def _get_job_result(job_id: str) -> bytes | None:
+    p = _job_result_path(job_id)
+    try:
+        with open(p, "rb") as f:
+            return f.read()
+    except Exception:
+        return None
 
 
 # Картинка/видео-инструкция (положи рядом с main.py)
@@ -788,16 +834,16 @@ async def extract_async(file: UploadFile = File(...)):
                 _set_job(job_id, status="error", message="Не удалось найти позиции", stats=stats)
                 return
 
-            csv_bytes = make_csv_excel_friendly(rows)
-            increment_counter()
+          csv_bytes = make_csv_excel_friendly(rows)
+_set_job_result(job_id, csv_bytes)
+increment_counter()
 
-            _set_job(
-                job_id,
-                status="done",
-                message="Готово",
-                stats=stats,
-                result=csv_bytes,
-            )
+_set_job(
+    job_id,
+    status="done",
+    message="Готово",
+    stats=stats,
+) 
         except Exception as e:
             _set_job(job_id, status="error", message=f"Ошибка: {e}")
 
@@ -829,7 +875,10 @@ def job_download(job_id: str):
     if j.get("status") != "done":
         raise HTTPException(status_code=409, detail="job not done")
 
-    csv_bytes = j.get("result")
+    csv_bytes = _get_job_result(job_id)
+if not csv_bytes:
+    raise HTTPException(status_code=404, detail="result not found")
+    
     filename = j.get("filename", "items.csv")
 
     return Response(
