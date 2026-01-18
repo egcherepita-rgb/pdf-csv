@@ -2,6 +2,9 @@ import io
 import os
 import re
 import csv
+import time
+import threading
+from uuid import uuid4
 from collections import OrderedDict
 from typing import List, Tuple, Dict
 
@@ -15,7 +18,10 @@ except Exception:
     openpyxl = None
 
 
-app = FastAPI(title="PDF → CSV (артикул / наименование / всего / категория)", version="3.7.0")
+app = FastAPI(
+    title="PDF → CSV (артикул / наименование / всего / категория)",
+    version="4.0.0",
+)
 
 # -------------------------
 # Regex
@@ -116,6 +122,7 @@ from threading import Lock
 COUNTER_FILE = os.getenv("COUNTER_FILE", "conversions.count")
 _counter_lock = Lock()
 
+
 def _read_counter() -> int:
     try:
         with open(COUNTER_FILE, "r", encoding="utf-8") as f:
@@ -123,11 +130,13 @@ def _read_counter() -> int:
     except Exception:
         return 0
 
+
 def _write_counter(v: int) -> None:
     tmp = COUNTER_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(str(v))
     os.replace(tmp, COUNTER_FILE)
+
 
 def increment_counter() -> int:
     with _counter_lock:
@@ -135,18 +144,47 @@ def increment_counter() -> int:
         _write_counter(v)
         return v
 
+
 def get_counter() -> int:
     return _read_counter()
 
-# Картинка-инструкция (положи рядом с main.py)
-INSTRUCTION_VIDEO_PATH = os.getenv("INSTRUCTION_VIDEO_PATH", "instruction.mp4")
 
+# -------------------------
+# Async jobs (progress)
+# -------------------------
+JOBS: Dict[str, dict] = {}
+JOBS_LOCK = threading.Lock()
+JOB_TTL_SEC = 30 * 60  # 30 минут хранить результаты
+
+
+def _cleanup_jobs():
+    now = time.time()
+    with JOBS_LOCK:
+        to_del = [k for k, v in JOBS.items() if now - v.get("created_at", now) > JOB_TTL_SEC]
+        for k in to_del:
+            JOBS.pop(k, None)
+
+
+def _set_job(job_id: str, **kwargs):
+    with JOBS_LOCK:
+        j = JOBS.get(job_id, {})
+        j.update(kwargs)
+        JOBS[job_id] = j
+
+
+def _get_job(job_id: str):
+    with JOBS_LOCK:
+        return JOBS.get(job_id)
+
+
+# Картинка/видео-инструкция (положи рядом с main.py)
+INSTRUCTION_VIDEO_PATH = os.getenv("INSTRUCTION_VIDEO_PATH", "instruction.mp4")
 
 # -------------------------
 # PDF parsing helpers
 # -------------------------
 def split_lines(page: fitz.Page) -> List[str]:
-    # Оставлено для совместимости (сейчас в parse_items мы не используем split_lines для скорости)
+    # Оставлено для совместимости (в parse_items не используем — там быстрее)
     txt = page.get_text("text") or ""
     lines = [normalize_space(x) for x in txt.splitlines()]
     return [x for x in lines if x]
@@ -195,8 +233,6 @@ def money_to_number(line: str) -> int:
 def is_project_total_only(line: str, prev_line: str = "") -> bool:
     """
     Не путать цену позиции (например "450 ₽") с итогом проекта (например "40 347 ₽").
-
-    Правила:
     1) Если предыдущая строка содержит "стоимость проекта" — считаем следующую сумму итогом.
     2) Если строка выглядит как "NNN ₽" и сумма >= 10 000 — считаем итогом.
     """
@@ -241,7 +277,6 @@ def clean_name_from_buffer(buf: List[str]) -> str:
     for ln in buf:
         if is_noise(ln) or is_header_token(ln) or is_totals_block(ln):
             continue
-        # Тут prev_line неизвестен — поэтому is_project_total_only не используем в фильтре буфера.
         filtered.append(ln)
 
     while filtered and (looks_like_dim_or_weight(filtered[-1]) or looks_like_money_or_qty(filtered[-1])):
@@ -255,21 +290,24 @@ def clean_name_from_buffer(buf: List[str]) -> str:
 
 
 # -------------------------
-# Main parser (объединённая логика)
+# Main parser
 # -------------------------
 def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
     """
-    Поддерживает ДВА якоря (оба будут работать в одном PDF):
-    A) В одной строке: "450 ₽ 2 900 ₽" (price ₽ qty sum ₽)
+    Поддерживает ДВА якоря (оба могут встретиться в одном PDF):
+    A) В одной строке: "450 ₽ 1 450 ₽" (price ₽ qty sum ₽)
     B) В разных строках: price ₽ -> qty -> sum ₽
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    total_pages = doc.page_count
 
     ordered = OrderedDict()
     buf: List[str] = []
 
     stats = {
         "pages": 0,
+        "total_pages": total_pages,
+        "processed_pages": 0,
         "items_found": 0,
         "anchors_inline": 0,
         "anchors_multiline": 0,
@@ -279,8 +317,9 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
 
     for page in doc:
         stats["pages"] += 1
+        stats["processed_pages"] += 1
 
-        # ---- УСКОРЕНИЕ: достаём текст ОДИН раз и быстро пропускаем страницы без ₽
+        # ---- УСКОРЕНИЕ: достаём текст ОДИН раз и пропускаем страницы без ₽
         txt = page.get_text("text") or ""
         if "₽" not in txt:
             continue
@@ -291,7 +330,6 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
             continue
         # ---- конец блока ускорения
 
-        # ВАЖНО: итоги (totals) считаем ЛОКАЛЬНО для страницы
         in_totals = False
         buf.clear()
 
@@ -336,7 +374,7 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
 
             # B) MULTILINE anchor: money -> qty -> money
             if RX_MONEY_LINE.fullmatch(line):
-                # УСКОРЕНИЕ: было i+12, делаем i+8 (обычно хватает)
+                # было i+12, делаем i+8 (обычно хватает)
                 end = min(len(lines), i + 8)
 
                 qty_idx = None
@@ -404,7 +442,7 @@ def make_csv_excel_friendly(rows: List[Tuple[str, int]]) -> bytes:
 
 
 # -------------------------
-# UI (миниатюра + открыть полностью)
+# UI (progress + timer)
 # -------------------------
 HOME_HTML = """<!doctype html>
 <html lang="ru">
@@ -559,34 +597,84 @@ HOME_HTML = """<!doctype html>
     btn.addEventListener('click', async () => {
       const f = input.files && input.files[0];
       if (!f) return;
+
       btn.disabled = true;
-      neutral('Обработка…');
+      const start = Date.now();
+
+      let timer = setInterval(() => {
+        const sec = Math.floor((Date.now() - start) / 1000);
+        neutral('Обработка… прошло ' + sec + ' сек');
+      }, 500);
+
       try {
+        // 1) стартуем async job
         const fd = new FormData();
         fd.append('file', f);
-        const resp = await fetch('/extract', { method: 'POST', body: fd });
-        if (!resp.ok) {
-          let text = await resp.text();
-          try { const j = JSON.parse(text); if (j.detail) text = String(j.detail); } catch(e) {}
-          throw new Error(text || ('HTTP ' + resp.status));
-        }
-        const blob = await resp.blob();
-        const base = (f.name || 'items.pdf').replace(/\.pdf$/i, '');
-        const filename = base + '.csv';
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
 
-        ok('Готово! Файл скачан: ' + filename);
-        loadCounter();
-      } catch(e) {
+        neutral('Загружаю PDF…');
+        const r = await fetch('/extract_async', { method: 'POST', body: fd });
+        if (!r.ok) {
+          let text = await r.text();
+          try { const j = JSON.parse(text); if (j.detail) text = String(j.detail); } catch(e) {}
+          throw new Error(text || ('HTTP ' + r.status));
+        }
+        const data = await r.json();
+        const job_id = data.job_id;
+
+        // 2) опрашиваем статус
+        while (true) {
+          const s = await fetch('/job/' + job_id);
+          if (!s.ok) {
+            let text = await s.text();
+            try { const j = JSON.parse(text); if (j.detail) text = String(j.detail); } catch(e) {}
+            throw new Error(text || ('HTTP ' + s.status));
+          }
+          const j = await s.json();
+
+          const sec = Math.floor((Date.now() - start) / 1000);
+          let msg = (j.message || 'Обработка…') + ' • ' + sec + ' сек';
+
+          if (j.total_pages && j.processed_pages) {
+            msg += ' • страниц: ' + j.processed_pages + '/' + j.total_pages;
+          }
+          neutral(msg);
+
+          if (j.status === 'done') {
+            // 3) скачиваем результат
+            const dl = await fetch('/job/' + job_id + '/download');
+            if (!dl.ok) {
+              let text = await dl.text();
+              try { const jj = JSON.parse(text); if (jj.detail) text = String(jj.detail); } catch(e) {}
+              throw new Error(text || ('HTTP ' + dl.status));
+            }
+            const blob = await dl.blob();
+
+            const filename = (j.filename || ((f.name || 'items.pdf').replace(/\\.pdf$/i, '') + '.csv'));
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+
+            ok('Готово! Файл скачан: ' + filename);
+            loadCounter();
+            break;
+          }
+
+          if (j.status === 'error') {
+            throw new Error(j.message || 'Ошибка обработки');
+          }
+
+          await new Promise(res => setTimeout(res, 600));
+        }
+
+      } catch (e) {
         err('Ошибка: ' + String(e.message || e));
       } finally {
+        clearInterval(timer);
         btn.disabled = !(input.files && input.files[0]);
       }
     });
@@ -610,6 +698,7 @@ def health():
         "category_value": CATEGORY_VALUE,
         "instruction_video_exists": os.path.exists(INSTRUCTION_VIDEO_PATH),
         "conversions": get_counter(),
+        "jobs_in_memory": len(JOBS),
     }
 
 
@@ -618,13 +707,16 @@ def home():
     return HOME_HTML
 
 
-@app.get("/instruction.mp4")
+@app.api_route("/instruction.mp4", methods=["GET", "HEAD"])
 def instruction_video():
     if not os.path.exists(INSTRUCTION_VIDEO_PATH):
         raise HTTPException(status_code=404, detail="instruction.mp4 not found")
     return FileResponse(INSTRUCTION_VIDEO_PATH, media_type="video/mp4")
 
 
+# -------------------------
+# OLD endpoint (оставили для совместимости)
+# -------------------------
 @app.post("/extract")
 async def extract(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
@@ -654,4 +746,94 @@ async def extract(file: UploadFile = File(...)):
         content=csv_bytes,
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="items.csv"'},
+    )
+
+
+# -------------------------
+# NEW async endpoints (progress)
+# -------------------------
+@app.post("/extract_async")
+async def extract_async(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Загрузите PDF файл (.pdf).")
+
+    pdf_bytes = await file.read()
+    original_filename = file.filename or "items.pdf"
+
+    job_id = str(uuid4())
+    _cleanup_jobs()
+    _set_job(
+        job_id,
+        created_at=time.time(),
+        status="processing",
+        message="Старт обработки",
+        processed_pages=0,
+        total_pages=0,
+        filename=(os.path.splitext(original_filename)[0] or "items") + ".csv",
+    )
+
+    def worker():
+        try:
+            _set_job(job_id, message="Читаю PDF…")
+            rows, stats = parse_items(pdf_bytes)
+
+            _set_job(
+                job_id,
+                processed_pages=int(stats.get("processed_pages", 0) or 0),
+                total_pages=int(stats.get("total_pages", 0) or 0),
+                message="Формирую CSV…",
+            )
+
+            if not rows:
+                _set_job(job_id, status="error", message="Не удалось найти позиции", stats=stats)
+                return
+
+            csv_bytes = make_csv_excel_friendly(rows)
+            increment_counter()
+
+            _set_job(
+                job_id,
+                status="done",
+                message="Готово",
+                stats=stats,
+                result=csv_bytes,
+            )
+        except Exception as e:
+            _set_job(job_id, status="error", message=f"Ошибка: {e}")
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/job/{job_id}")
+def job_status(job_id: str):
+    j = _get_job(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    return {
+        "status": j.get("status"),
+        "message": j.get("message"),
+        "processed_pages": int(j.get("processed_pages", 0) or 0),
+        "total_pages": int(j.get("total_pages", 0) or 0),
+        "stats": j.get("stats"),
+        "filename": j.get("filename"),
+    }
+
+
+@app.get("/job/{job_id}/download")
+def job_download(job_id: str):
+    j = _get_job(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="job not found")
+    if j.get("status") != "done":
+        raise HTTPException(status_code=409, detail="job not done")
+
+    csv_bytes = j.get("result")
+    filename = j.get("filename", "items.csv")
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
