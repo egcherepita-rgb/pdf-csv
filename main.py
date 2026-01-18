@@ -146,6 +146,7 @@ INSTRUCTION_VIDEO_PATH = os.getenv("INSTRUCTION_VIDEO_PATH", "instruction.mp4")
 # PDF parsing helpers
 # -------------------------
 def split_lines(page: fitz.Page) -> List[str]:
+    # Оставлено для совместимости (сейчас в parse_items мы не используем split_lines для скорости)
     txt = page.get_text("text") or ""
     lines = [normalize_space(x) for x in txt.splitlines()]
     return [x for x in lines if x]
@@ -278,9 +279,17 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
 
     for page in doc:
         stats["pages"] += 1
-        lines = split_lines(page)
+
+        # ---- УСКОРЕНИЕ: достаём текст ОДИН раз и быстро пропускаем страницы без ₽
+        txt = page.get_text("text") or ""
+        if "₽" not in txt:
+            continue
+
+        lines = [normalize_space(x) for x in txt.splitlines()]
+        lines = [x for x in lines if x]
         if not lines:
             continue
+        # ---- конец блока ускорения
 
         # ВАЖНО: итоги (totals) считаем ЛОКАЛЬНО для страницы
         in_totals = False
@@ -327,7 +336,8 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
 
             # B) MULTILINE anchor: money -> qty -> money
             if RX_MONEY_LINE.fullmatch(line):
-                end = min(len(lines), i + 12)
+                # УСКОРЕНИЕ: было i+12, делаем i+8 (обычно хватает)
+                end = min(len(lines), i + 8)
 
                 qty_idx = None
                 for j in range(i + 1, end):
@@ -586,7 +596,6 @@ HOME_HTML = """<!doctype html>
 """
 
 
-
 @app.get("/stats")
 def stats():
     return {"conversions": get_counter()}
@@ -614,8 +623,6 @@ def instruction_video():
     if not os.path.exists(INSTRUCTION_VIDEO_PATH):
         raise HTTPException(status_code=404, detail="instruction.mp4 not found")
     return FileResponse(INSTRUCTION_VIDEO_PATH, media_type="video/mp4")
-
-
 
 
 @app.post("/extract")
