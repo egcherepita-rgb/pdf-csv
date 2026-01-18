@@ -3,10 +3,11 @@ import os
 import re
 import csv
 import time
+import json
 import threading
 from uuid import uuid4
 from collections import OrderedDict
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 import fitz  # PyMuPDF
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -20,7 +21,7 @@ except Exception:
 
 app = FastAPI(
     title="PDF → CSV (артикул / наименование / всего / категория)",
-    version="4.0.0",
+    version="4.2.0",
 )
 
 # -------------------------
@@ -34,7 +35,7 @@ RX_MONEY_LINE = re.compile(r"^\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?\s*₽$")
 RX_INT = re.compile(r"^\d+$")
 RX_ANY_RUB = re.compile(r"₽")
 
-# В одной строке: "... 450 ₽ 1 450 ₽"
+# В одной строке: "... 450 ₽ 2 900 ₽"
 RX_PRICE_QTY_SUM = re.compile(
     r"(?P<price>\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?)\s*₽\s+"
     r"(?P<qty>\d{1,4})\s+"
@@ -48,7 +49,9 @@ RX_DIMS_ANYWHERE = re.compile(
     re.IGNORECASE,
 )
 
-
+# -------------------------
+# Helpers
+# -------------------------
 def normalize_space(s: str) -> str:
     s = (s or "").replace("\u00a0", " ")
     s = re.sub(r"\s+", " ", s)
@@ -150,62 +153,71 @@ def get_counter() -> int:
 
 
 # -------------------------
-# Async jobs (progress) — file-based storage (OK with gunicorn -w 2)
+# Async jobs (progress) — FILE storage (OK with gunicorn -w 2)
 # -------------------------
 JOB_DIR = os.getenv("JOB_DIR", "/tmp/pdf2csv_jobs")
-JOB_TTL_SEC = int(os.getenv("JOB_TTL_SEC", str(30 * 60)))  # 30 минут
+JOB_TTL_SEC = int(os.getenv("JOB_TTL_SEC", str(30 * 60)))  # seconds
 
-def _ensure_job_dir():
+
+def _ensure_job_dir() -> None:
     os.makedirs(JOB_DIR, exist_ok=True)
+
 
 def _job_json_path(job_id: str) -> str:
     return os.path.join(JOB_DIR, f"{job_id}.json")
 
+
 def _job_result_path(job_id: str) -> str:
     return os.path.join(JOB_DIR, f"{job_id}.csv")
+
 
 def _write_json_atomic(path: str, data: dict) -> None:
     _ensure_job_dir()
     tmp = path + ".tmp"
-    import json
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
     os.replace(tmp, path)
 
-def _read_json(path: str) -> dict | None:
-    import json
+
+def _read_json(path: str) -> Optional[dict]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return None
 
-def _cleanup_jobs():
+
+def _cleanup_jobs() -> None:
     _ensure_job_dir()
     now = time.time()
-    for name in os.listdir(JOB_DIR):
-        if not (name.endswith(".json") or name.endswith(".csv")):
-            continue
-        p = os.path.join(JOB_DIR, name)
-        try:
-            if now - os.path.getmtime(p) > JOB_TTL_SEC:
-                os.remove(p)
-        except Exception:
-            pass
+    try:
+        for name in os.listdir(JOB_DIR):
+            if not (name.endswith(".json") or name.endswith(".csv")):
+                continue
+            p = os.path.join(JOB_DIR, name)
+            try:
+                if now - os.path.getmtime(p) > JOB_TTL_SEC:
+                    os.remove(p)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
-def _set_job(job_id: str, **kwargs):
+
+def _set_job(job_id: str, **kwargs) -> None:
     _cleanup_jobs()
     path = _job_json_path(job_id)
     data = _read_json(path) or {}
     data.update(kwargs)
-    # “touch” по mtime через перезапись
     _write_json_atomic(path, data)
 
-def _get_job(job_id: str) -> dict | None:
+
+def _get_job(job_id: str) -> Optional[dict]:
     _cleanup_jobs()
     return _read_json(_job_json_path(job_id))
 
-def _set_job_result(job_id: str, csv_bytes: bytes):
+
+def _set_job_result(job_id: str, csv_bytes: bytes) -> None:
     _cleanup_jobs()
     _ensure_job_dir()
     p = _job_result_path(job_id)
@@ -214,7 +226,8 @@ def _set_job_result(job_id: str, csv_bytes: bytes):
         f.write(csv_bytes)
     os.replace(tmp, p)
 
-def _get_job_result(job_id: str) -> bytes | None:
+
+def _get_job_result(job_id: str) -> Optional[bytes]:
     p = _job_result_path(job_id)
     try:
         with open(p, "rb") as f:
@@ -223,19 +236,14 @@ def _get_job_result(job_id: str) -> bytes | None:
         return None
 
 
-# Картинка/видео-инструкция (положи рядом с main.py)
+# -------------------------
+# Instruction media (optional)
+# -------------------------
 INSTRUCTION_VIDEO_PATH = os.getenv("INSTRUCTION_VIDEO_PATH", "instruction.mp4")
 
 # -------------------------
 # PDF parsing helpers
 # -------------------------
-def split_lines(page: fitz.Page) -> List[str]:
-    # Оставлено для совместимости (в parse_items не используем — там быстрее)
-    txt = page.get_text("text") or ""
-    lines = [normalize_space(x) for x in txt.splitlines()]
-    return [x for x in lines if x]
-
-
 def is_noise(line: str) -> bool:
     low = (line or "").strip().lower()
     if not low:
@@ -265,7 +273,6 @@ def is_totals_block(line: str) -> bool:
 
 
 def money_to_number(line: str) -> int:
-    # "40 347 ₽" -> 40347
     s = normalize_space(line).replace("₽", "").strip()
     s = s.replace("\u00a0", " ")
     s = s.replace(" ", "")
@@ -278,17 +285,15 @@ def money_to_number(line: str) -> int:
 
 def is_project_total_only(line: str, prev_line: str = "") -> bool:
     """
-    Не путать цену позиции (например "450 ₽") с итогом проекта (например "40 347 ₽").
+    Не путать цену позиции с итогом проекта.
     1) Если предыдущая строка содержит "стоимость проекта" — считаем следующую сумму итогом.
     2) Если строка выглядит как "NNN ₽" и сумма >= 10 000 — считаем итогом.
     """
     if not RX_MONEY_LINE.fullmatch(normalize_space(line)):
         return False
-
     prev = normalize_space(prev_line).lower()
     if "стоимость проекта" in prev:
         return True
-
     v = money_to_number(line)
     return v >= 10000
 
@@ -315,11 +320,7 @@ def looks_like_money_or_qty(line: str) -> bool:
 
 
 def clean_name_from_buffer(buf: List[str]) -> str:
-    """
-    Буфер накапливает строки до якоря (цена/кол-во/сумма).
-    Чистим от мусора, заголовков, размеров, веса и т.п.
-    """
-    filtered = []
+    filtered: List[str] = []
     for ln in buf:
         if is_noise(ln) or is_header_token(ln) or is_totals_block(ln):
             continue
@@ -340,14 +341,14 @@ def clean_name_from_buffer(buf: List[str]) -> str:
 # -------------------------
 def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
     """
-    Поддерживает ДВА якоря (оба могут встретиться в одном PDF):
-    A) В одной строке: "450 ₽ 1 450 ₽" (price ₽ qty sum ₽)
+    Поддерживает два якоря:
+    A) В одной строке: price ₽ qty sum ₽
     B) В разных строках: price ₽ -> qty -> sum ₽
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     total_pages = doc.page_count
 
-    ordered = OrderedDict()
+    ordered: "OrderedDict[str, int]" = OrderedDict()
     buf: List[str] = []
 
     stats = {
@@ -365,7 +366,7 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
         stats["pages"] += 1
         stats["processed_pages"] += 1
 
-        # ---- УСКОРЕНИЕ: достаём текст ОДИН раз и пропускаем страницы без ₽
+        # ---- SPEED: extract text once, skip pages without ₽
         txt = page.get_text("text") or ""
         if "₽" not in txt:
             continue
@@ -374,7 +375,7 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
         lines = [x for x in lines if x]
         if not lines:
             continue
-        # ---- конец блока ускорения
+        # ----
 
         in_totals = False
         buf.clear()
@@ -398,7 +399,7 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
                 i += 1
                 continue
 
-            # A) INLINE anchor: "... 450 ₽ 1 450 ₽"
+            # A) INLINE anchor
             m = RX_PRICE_QTY_SUM.search(line)
             if m:
                 name = clean_name_from_buffer(buf)
@@ -420,7 +421,6 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
 
             # B) MULTILINE anchor: money -> qty -> money
             if RX_MONEY_LINE.fullmatch(line):
-                # было i+12, делаем i+8 (обычно хватает)
                 end = min(len(lines), i + 8)
 
                 qty_idx = None
@@ -730,6 +730,9 @@ HOME_HTML = """<!doctype html>
 """
 
 
+# -------------------------
+# Endpoints
+# -------------------------
 @app.get("/stats")
 def stats():
     return {"conversions": get_counter()}
@@ -737,6 +740,13 @@ def stats():
 
 @app.get("/health")
 def health():
+    # lightweight health
+    try:
+        _ensure_job_dir()
+        job_files = len([x for x in os.listdir(JOB_DIR) if x.endswith(".json")])
+    except Exception:
+        job_files = -1
+
     return {
         "status": "ok",
         "article_map_size": len(ARTICLE_MAP),
@@ -744,7 +754,8 @@ def health():
         "category_value": CATEGORY_VALUE,
         "instruction_video_exists": os.path.exists(INSTRUCTION_VIDEO_PATH),
         "conversions": get_counter(),
-        "jobs_in_memory": len(JOBS),
+        "job_dir": JOB_DIR,
+        "job_files": job_files,
     }
 
 
@@ -760,9 +771,7 @@ def instruction_video():
     return FileResponse(INSTRUCTION_VIDEO_PATH, media_type="video/mp4")
 
 
-# -------------------------
-# OLD endpoint (оставили для совместимости)
-# -------------------------
+# OLD endpoint (sync) — оставили для совместимости
 @app.post("/extract")
 async def extract(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
@@ -771,7 +780,7 @@ async def extract(file: UploadFile = File(...)):
     pdf_bytes = await file.read()
 
     try:
-        rows, stats = parse_items(pdf_bytes)
+        rows, stats_ = parse_items(pdf_bytes)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Не удалось распарсить PDF: {e}")
 
@@ -782,7 +791,7 @@ async def extract(file: UploadFile = File(...)):
                 "Не удалось найти позиции. Поддерживаемые якоря:\n"
                 "1) в одной строке: price ₽ qty sum ₽\n"
                 "2) в разных строках: price ₽ -> qty -> sum ₽\n"
-                f"debug={stats}"
+                f"debug={stats_}"
             ),
         )
 
@@ -795,9 +804,7 @@ async def extract(file: UploadFile = File(...)):
     )
 
 
-# -------------------------
 # NEW async endpoints (progress)
-# -------------------------
 @app.post("/extract_async")
 async def extract_async(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
@@ -807,7 +814,6 @@ async def extract_async(file: UploadFile = File(...)):
     original_filename = file.filename or "items.pdf"
 
     job_id = str(uuid4())
-    _cleanup_jobs()
     _set_job(
         job_id,
         created_at=time.time(),
@@ -821,29 +827,29 @@ async def extract_async(file: UploadFile = File(...)):
     def worker():
         try:
             _set_job(job_id, message="Читаю PDF…")
-            rows, stats = parse_items(pdf_bytes)
+            rows, st = parse_items(pdf_bytes)
 
             _set_job(
                 job_id,
-                processed_pages=int(stats.get("processed_pages", 0) or 0),
-                total_pages=int(stats.get("total_pages", 0) or 0),
+                processed_pages=int(st.get("processed_pages", 0) or 0),
+                total_pages=int(st.get("total_pages", 0) or 0),
                 message="Формирую CSV…",
             )
 
             if not rows:
-                _set_job(job_id, status="error", message="Не удалось найти позиции", stats=stats)
+                _set_job(job_id, status="error", message="Не удалось найти позиции", stats=st)
                 return
 
-          csv_bytes = make_csv_excel_friendly(rows)
-_set_job_result(job_id, csv_bytes)
-increment_counter()
+            csv_bytes = make_csv_excel_friendly(rows)
+            _set_job_result(job_id, csv_bytes)
+            increment_counter()
 
-_set_job(
-    job_id,
-    status="done",
-    message="Готово",
-    stats=stats,
-) 
+            _set_job(
+                job_id,
+                status="done",
+                message="Готово",
+                stats=st,
+            )
         except Exception as e:
             _set_job(job_id, status="error", message=f"Ошибка: {e}")
 
@@ -876,11 +882,10 @@ def job_download(job_id: str):
         raise HTTPException(status_code=409, detail="job not done")
 
     csv_bytes = _get_job_result(job_id)
-if not csv_bytes:
-    raise HTTPException(status_code=404, detail="result not found")
-    
-    filename = j.get("filename", "items.csv")
+    if not csv_bytes:
+        raise HTTPException(status_code=404, detail="result not found")
 
+    filename = j.get("filename", "items.csv")
     return Response(
         content=csv_bytes,
         media_type="text/csv; charset=utf-8",
