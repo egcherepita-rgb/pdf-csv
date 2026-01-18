@@ -873,6 +873,8 @@ def job_status(job_id: str):
     }
 
 
+import urllib.parse
+
 @app.get("/job/{job_id}/download")
 def job_download(job_id: str):
     j = _get_job(job_id)
@@ -885,9 +887,22 @@ def job_download(job_id: str):
     if not csv_bytes:
         raise HTTPException(status_code=404, detail="result not found")
 
-    filename = j.get("filename", "items.csv")
+    # безопасное имя файла
+    filename_utf8 = j.get("filename", "items.csv")
+    filename_ascii = re.sub(r'[^A-Za-z0-9_.-]+', '_', filename_utf8)
+
+    quoted = urllib.parse.quote(filename_utf8)
+
+    headers = {
+        # fallback для старых клиентов
+        "Content-Disposition": (
+            f'attachment; filename="{filename_ascii}"; '
+            f"filename*=UTF-8''{quoted}"
+        )
+    }
+
     return Response(
         content=csv_bytes,
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=headers,
     )
