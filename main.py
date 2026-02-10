@@ -341,9 +341,10 @@ def clean_name_from_buffer(buf: List[str]) -> str:
 # -------------------------
 def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
     """
-    Поддерживает два якоря:
+    Поддерживает якоря:
     A) В одной строке: price ₽ qty sum ₽
     B) В разных строках: price ₽ -> qty -> sum ₽
+    C) В строке с весом/размерами цена "прилипла": ... кг. 75 ₽ -> qty -> sum ₽
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     total_pages = doc.page_count
@@ -419,6 +420,28 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
                 i += 1
                 continue
 
+            # C) EMBEDDED price anchor: line contains ₽ (price embedded in weight/dims line)
+            #    then next line is qty, next-next is sum money line
+            if RX_ANY_RUB.search(line):
+                if i + 2 < len(lines) and RX_INT.fullmatch(lines[i + 1]) and RX_MONEY_LINE.fullmatch(lines[i + 2]):
+                    try:
+                        qty = int(lines[i + 1])
+                    except Exception:
+                        qty = 0
+
+                    if 1 <= qty <= 500:
+                        # include current line so cleaner can drop weight/dims/price tail
+                        name = clean_name_from_buffer(buf + [line])
+                        buf.clear()
+
+                        if name:
+                            ordered[name] = ordered.get(name, 0) + qty
+                            stats["items_found"] += 1
+                            stats["anchors_multiline"] += 1
+
+                    i += 3
+                    continue
+
             # B) MULTILINE anchor: money -> qty -> money
             if RX_MONEY_LINE.fullmatch(line):
                 end = min(len(lines), i + 8)
@@ -438,7 +461,7 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
 
                 sum_idx = None
                 for j in range(qty_idx + 1, end):
-                    if RX_MONEY_LINE.fullmatch(lines[j]) or RX_ANY_RUB.search(lines[j]):
+                    if RX_MONEY_LINE.fullmatch(lines[j]):
                         sum_idx = j
                         break
 
