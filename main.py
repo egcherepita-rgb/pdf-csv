@@ -22,7 +22,7 @@ except Exception:
 
 app = FastAPI(
     title="PDF → CSV (артикул / наименование / всего / категория)",
-    version="4.2.0",
+    version="4.3.0",
 )
 
 # Static files (logo, etc.)
@@ -371,7 +371,6 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
         stats["pages"] += 1
         stats["processed_pages"] += 1
 
-        # ---- SPEED: extract text once, skip pages without ₽
         txt = page.get_text("text") or ""
         if "₽" not in txt:
             continue
@@ -380,7 +379,6 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
         lines = [x for x in lines if x]
         if not lines:
             continue
-        # ----
 
         in_totals = False
         buf.clear()
@@ -424,8 +422,7 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
                 i += 1
                 continue
 
-            # C) EMBEDDED price anchor: line contains ₽ (price embedded in weight/dims line)
-            #    then next line is qty, next-next is sum money line
+            # C) EMBEDDED price anchor
             if RX_ANY_RUB.search(line):
                 if i + 2 < len(lines) and RX_INT.fullmatch(lines[i + 1]) and RX_MONEY_LINE.fullmatch(lines[i + 2]):
                     try:
@@ -434,7 +431,6 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
                         qty = 0
 
                     if 1 <= qty <= 500:
-                        # include current line so cleaner can drop weight/dims/price tail
                         name = clean_name_from_buffer(buf + [line])
                         buf.clear()
 
@@ -515,7 +511,7 @@ def make_csv_excel_friendly(rows: List[Tuple[str, int]]) -> bytes:
 
 
 # -------------------------
-# UI (progress + timer)
+# UI (centered upload row + fixed hero)
 # -------------------------
 HOME_HTML = """<!doctype html>
 <html lang="ru">
@@ -528,34 +524,7 @@ HOME_HTML = """<!doctype html>
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
            background: radial-gradient(1200px 600px at 20% 10%, #18234a 0%, var(--bg) 55%); color: var(--text); }
 
-    .wrap { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding: 28px; padding-top: 170px; }
-
-    .card { width:min(900px, 100%); background: rgba(18,26,42,.92); border: 1px solid var(--border);
-            border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
-    .top { display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
-    h1 { margin:0; font-size: 28px; letter-spacing: .2px; }
-    .hint { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
-    .badge { font-size: 12px; color: var(--muted); border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; }
-    .right { display:flex; flex-direction:column; align-items:flex-end; gap: 10px; }
-
-    .row { margin-top: 18px; display:flex; gap: 12px; align-items:center; flex-wrap:wrap; }
-    .file { display:flex; align-items:center; gap:10px; padding: 10px 12px; border: 1px dashed var(--border);
-            border-radius: 14px; background: rgba(255,255,255,.02); }
-    button { padding: 10px 14px; border: 0; border-radius: 14px; cursor: pointer; font-weight: 800;
-             background: var(--btn); color: #0b1020; }
-    button:disabled { opacity: .55; cursor:not-allowed; }
-    .status { margin-top: 14px; font-size: 14px; color: var(--muted); white-space: pre-wrap; }
-    .status.ok { color: #79ffa8; }
-    .status.err { color: #ff7b8a; }
-    .help { margin-top: 16px; }
-    .helphead { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
-    .helptitle { font-weight: 700; color: var(--text); }
-    .openfull { font-size: 13px; color: var(--muted); text-decoration: underline; cursor: pointer; }
-    .thumb { margin-top: 10px; border: 1px solid var(--border); border-radius: 14px; overflow:hidden;
-             background: rgba(255,255,255,.02); cursor: zoom-in; }
-    .thumb video { display:block; width:100%; height:auto; max-height: 260px; object-fit: cover; object-position: top; }
-
-    /* hero header (fixed, doesn't affect layout) */
+    /* HERO header (fixed, doesn't affect layout) */
     .hero {
       position: fixed;
       top: 22px;
@@ -578,8 +547,45 @@ HOME_HTML = """<!doctype html>
       opacity: .95;
     }
 
+    .wrap { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding: 28px; padding-top: 170px; }
+
+    .card { width:min(900px, 100%); background: rgba(18,26,42,.92); border: 1px solid var(--border);
+            border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
+    .top { display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+    h1 { margin:0; font-size: 28px; letter-spacing: .2px; }
+    .hint { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+    .badge { font-size: 12px; color: var(--muted); border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; }
+    .right { display:flex; flex-direction:column; align-items:flex-end; gap: 10px; }
+
+    /* CENTER upload row */
+    .row {
+      margin-top: 18px;
+      display:flex;
+      gap: 12px;
+      align-items:center;
+      justify-content:center;
+      flex-wrap:wrap;
+      width: 100%;
+    }
+
+    .file { display:flex; align-items:center; justify-content:center; gap:10px; padding: 10px 12px; border: 1px dashed var(--border);
+            border-radius: 14px; background: rgba(255,255,255,.02); }
+    button { padding: 10px 14px; border: 0; border-radius: 14px; cursor: pointer; font-weight: 800;
+             background: var(--btn); color: #0b1020; }
+    button:disabled { opacity: .55; cursor:not-allowed; }
+    .status { margin-top: 14px; font-size: 14px; color: var(--muted); white-space: pre-wrap; text-align:center; }
+    .status.ok { color: #79ffa8; }
+    .status.err { color: #ff7b8a; }
+    .help { margin-top: 16px; }
+    .helphead { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    .helptitle { font-weight: 700; color: var(--text); }
+    .openfull { font-size: 13px; color: var(--muted); text-decoration: underline; cursor: pointer; }
+    .thumb { margin-top: 10px; border: 1px solid var(--border); border-radius: 14px; overflow:hidden;
+             background: rgba(255,255,255,.02); cursor: zoom-in; }
+    .thumb video { display:block; width:100%; height:auto; max-height: 260px; object-fit: cover; object-position: top; }
+
     /* modal */
-    .modal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display:none; align-items:center; justify-content:center; padding: 18px; }
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display:none; align-items:center; justify-content:center; padding: 18px; z-index: 20; }
     .modal.open { display:flex; }
     .modalcard { width:min(1200px, 100%); background: rgba(18,26,42,.96); border: 1px solid var(--border);
                  border-radius: 18px; overflow:hidden; box-shadow: 0 30px 100px rgba(0,0,0,.6); }
@@ -806,7 +812,6 @@ def stats():
 
 @app.get("/health")
 def health():
-    # lightweight health
     try:
         _ensure_job_dir()
         job_files = len([x for x in os.listdir(JOB_DIR) if x.endswith(".json")])
@@ -954,14 +959,11 @@ def job_download(job_id: str):
     if not csv_bytes:
         raise HTTPException(status_code=404, detail="result not found")
 
-    # безопасное имя файла
     filename_utf8 = j.get("filename", "items.csv")
     filename_ascii = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename_utf8)
-
     quoted = urllib.parse.quote(filename_utf8)
 
     headers = {
-        # fallback для старых клиентов
         "Content-Disposition": (
             f'attachment; filename="{filename_ascii}"; '
             f"filename*=UTF-8''{quoted}"
