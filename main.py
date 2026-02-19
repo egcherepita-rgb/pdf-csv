@@ -525,9 +525,22 @@ HOME_HTML = """<!doctype html>
   <title>PDF → CSV</title>
   <style>
     :root { --bg:#0b0f17; --card:#121a2a; --text:#e9eefc; --muted:#a8b3d6; --border:rgba(255,255,255,.08); --btn:#4f7cff; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-           background: radial-gradient(1200px 600px at 20% 10%, #18234a 0%, var(--bg) 55%); color: var(--text); }
-    .wrap { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding: 28px; }
+    body {
+      margin:0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 20% 10%, #18234a 0%, var(--bg) 55%);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .hero { width: 100%; text-align: center; padding: 26px 18px 10px; }
+    .hero-title { font-weight: 900; letter-spacing: .6px; font-size: clamp(28px, 4vw, 48px); margin: 0; }
+    .hero-logo { margin-top: 12px; height: 56px; width: auto; opacity: .95; }
+
+    .wrap { flex: 1; width:100%; display:flex; align-items:center; justify-content:center; padding: 16px 28px 28px; }
+
     .card { width:min(900px, 100%); background: rgba(18,26,42,.92); border: 1px solid var(--border);
             border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
     .top { display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
@@ -535,7 +548,6 @@ HOME_HTML = """<!doctype html>
     .hint { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
     .badge { font-size: 12px; color: var(--muted); border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; }
     .right { display:flex; flex-direction:column; align-items:flex-end; gap: 10px; }
-    .brandlogo { height: 44px; width: auto; opacity: .95; }
 
     .row { margin-top: 18px; display:flex; gap: 12px; align-items:center; flex-wrap:wrap; }
     .file { display:flex; align-items:center; gap:10px; padding: 10px 12px; border: 1px dashed var(--border);
@@ -553,6 +565,7 @@ HOME_HTML = """<!doctype html>
     .thumb { margin-top: 10px; border: 1px solid var(--border); border-radius: 14px; overflow:hidden;
              background: rgba(255,255,255,.02); cursor: zoom-in; }
     .thumb video { display:block; width:100%; height:auto; max-height: 260px; object-fit: cover; object-position: top; }
+
     /* modal */
     .modal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display:none; align-items:center; justify-content:center; padding: 18px; }
     .modal.open { display:flex; }
@@ -564,12 +577,19 @@ HOME_HTML = """<!doctype html>
              border-radius: 12px; padding: 8px 10px; cursor:pointer; font-weight: 700; }
     .modalbody { background: #0b0f17; }
     .modalbody video { display:block; width:100%; height:auto; }
+
+    /* bottom */
     .corner { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--muted); opacity: .9; }
     .footer-note { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%);
                    font-size: 13px; color: var(--muted); opacity: .9; text-align:center; padding: 0 12px; }
   </style>
 </head>
 <body>
+  <div class="hero">
+    <div class="hero-title">ГАРДЕРОБНАЯ СИСТЕМА</div>
+    <img class="hero-logo" src="/static/logo.png" alt="ПРАКТИК Home" />
+  </div>
+
   <div class="wrap">
     <div class="card">
       <div class="top">
@@ -578,7 +598,6 @@ HOME_HTML = """<!doctype html>
           <div class="hint">Загрузите PDF и скачайте CSV для импорта.</div>
         </div>
         <div class="right">
-          <img class="brandlogo" src="/static/logo.png" alt="ПРАКТИК Home" />
           <div class="badge">CSV: ; • UTF-8 • BOM</div>
         </div>
       </div>
@@ -605,7 +624,7 @@ HOME_HTML = """<!doctype html>
   </div>
 
   <div class="corner" id="counter">…</div>
-  <div class="footer-note">Программа создана командой ПРОМЕТ</div>
+  <div class="footer-note">Программа создана командой ПРОМЕТ для своих дилеров</div>
 
   <div class="modal" id="modal" aria-hidden="true">
     <div class="modalcard">
