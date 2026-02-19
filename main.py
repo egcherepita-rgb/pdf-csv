@@ -12,6 +12,7 @@ from typing import List, Tuple, Dict, Optional
 import fitz  # PyMuPDF
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import Response, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 try:
     import openpyxl  # requires openpyxl in requirements.txt
@@ -23,6 +24,9 @@ app = FastAPI(
     title="PDF → CSV (артикул / наименование / всего / категория)",
     version="4.2.0",
 )
+
+# Static files (logo, etc.)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # -------------------------
 # Regex
@@ -197,7 +201,6 @@ def _cleanup_jobs() -> None:
             p = os.path.join(JOB_DIR, name)
             try:
                 if now - os.path.getmtime(p) > JOB_TTL_SEC:
-                    show = True
                     os.remove(p)
             except Exception:
                 pass
@@ -528,10 +531,12 @@ HOME_HTML = """<!doctype html>
     .card { width:min(900px, 100%); background: rgba(18,26,42,.92); border: 1px solid var(--border);
             border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
     .top { display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
-    h1 { margin:0; font-size: 24px; letter-spacing: .2px; line-height: 1.15; }
-    .sub { margin-top: 6px; font-size: 16px; font-weight: 700; color: var(--muted); }
+    h1 { margin:0; font-size: 28px; letter-spacing: .2px; }
     .hint { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
     .badge { font-size: 12px; color: var(--muted); border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; }
+    .right { display:flex; flex-direction:column; align-items:flex-end; gap: 10px; }
+    .brandlogo { height: 44px; width: auto; opacity: .95; }
+
     .row { margin-top: 18px; display:flex; gap: 12px; align-items:center; flex-wrap:wrap; }
     .file { display:flex; align-items:center; gap:10px; padding: 10px 12px; border: 1px dashed var(--border);
             border-radius: 14px; background: rgba(255,255,255,.02); }
@@ -559,21 +564,9 @@ HOME_HTML = """<!doctype html>
              border-radius: 12px; padding: 8px 10px; cursor:pointer; font-weight: 700; }
     .modalbody { background: #0b0f17; }
     .modalbody video { display:block; width:100%; height:auto; }
-
-    /* bottom widgets */
     .corner { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--muted); opacity: .9; }
-    .footer-note {
-      position: fixed;
-      left: 50%;
-      bottom: 10px;
-      transform: translateX(-50%);
-      font-size: 13px;
-      color: var(--muted);
-      opacity: .9;
-      text-align: center;
-      padding: 0 12px;
-      pointer-events: none;
-    }
+    .footer-note { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%);
+                   font-size: 13px; color: var(--muted); opacity: .9; text-align:center; padding: 0 12px; }
   </style>
 </head>
 <body>
@@ -581,11 +574,13 @@ HOME_HTML = """<!doctype html>
     <div class="card">
       <div class="top">
         <div>
-          <h1>ГАРДЕРОБНАЯ СИСТЕМА ПРАКТИК HOME</h1>
-          <div class="sub">PDF → CSV конвертер</div>
+          <h1>PDF → CSV</h1>
           <div class="hint">Загрузите PDF и скачайте CSV для импорта.</div>
         </div>
-        <div class="badge">CSV: ; • UTF-8 • BOM</div>
+        <div class="right">
+          <img class="brandlogo" src="/static/logo.png" alt="ПРАКТИК Home" />
+          <div class="badge">CSV: ; • UTF-8 • BOM</div>
+        </div>
       </div>
 
       <div class="row">
@@ -610,7 +605,7 @@ HOME_HTML = """<!doctype html>
   </div>
 
   <div class="corner" id="counter">…</div>
-  <div class="footer-note">Программа создана командой ПРОМЕТ для своих дилеров</div>
+  <div class="footer-note">Программа создана командой ПРОМЕТ</div>
 
   <div class="modal" id="modal" aria-hidden="true">
     <div class="modalcard">
@@ -916,6 +911,7 @@ def job_status(job_id: str):
 
 import urllib.parse
 
+
 @app.get("/job/{job_id}/download")
 def job_download(job_id: str):
     j = _get_job(job_id)
@@ -930,7 +926,7 @@ def job_download(job_id: str):
 
     # безопасное имя файла
     filename_utf8 = j.get("filename", "items.csv")
-    filename_ascii = re.sub(r'[^A-Za-z0-9_.-]+', '_', filename_utf8)
+    filename_ascii = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename_utf8)
 
     quoted = urllib.parse.quote(filename_utf8)
 
