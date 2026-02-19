@@ -525,21 +525,10 @@ HOME_HTML = """<!doctype html>
   <title>PDF → CSV</title>
   <style>
     :root { --bg:#0b0f17; --card:#121a2a; --text:#e9eefc; --muted:#a8b3d6; --border:rgba(255,255,255,.08); --btn:#4f7cff; }
-    body {
-      margin:0;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      background: radial-gradient(1200px 600px at 20% 10%, #18234a 0%, var(--bg) 55%);
-      color: var(--text);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+           background: radial-gradient(1200px 600px at 20% 10%, #18234a 0%, var(--bg) 55%); color: var(--text); }
 
-    .hero { width: 100%; text-align: center; padding: 26px 18px 10px; }
-    .hero-title { font-weight: 900; letter-spacing: .6px; font-size: clamp(28px, 4vw, 48px); margin: 0; }
-    .hero-logo { margin-top: 12px; height: 56px; width: auto; opacity: .95; }
-
-    .wrap { flex: 1; width:100%; display:flex; align-items:center; justify-content:center; padding: 16px 28px 28px; }
+    .wrap { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding: 28px; padding-top: 170px; }
 
     .card { width:min(900px, 100%); background: rgba(18,26,42,.92); border: 1px solid var(--border);
             border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
@@ -566,6 +555,29 @@ HOME_HTML = """<!doctype html>
              background: rgba(255,255,255,.02); cursor: zoom-in; }
     .thumb video { display:block; width:100%; height:auto; max-height: 260px; object-fit: cover; object-position: top; }
 
+    /* hero header (fixed, doesn't affect layout) */
+    .hero {
+      position: fixed;
+      top: 22px;
+      left: 0;
+      width: 100%;
+      text-align: center;
+      z-index: 5;
+      pointer-events: none;
+    }
+    .hero-title {
+      font-weight: 900;
+      letter-spacing: .6px;
+      font-size: clamp(28px, 4vw, 48px);
+      margin: 0;
+    }
+    .hero-logo {
+      margin-top: 12px;
+      height: 56px;
+      width: auto;
+      opacity: .95;
+    }
+
     /* modal */
     .modal { position: fixed; inset: 0; background: rgba(0,0,0,.75); display:none; align-items:center; justify-content:center; padding: 18px; }
     .modal.open { display:flex; }
@@ -578,7 +590,6 @@ HOME_HTML = """<!doctype html>
     .modalbody { background: #0b0f17; }
     .modalbody video { display:block; width:100%; height:auto; }
 
-    /* bottom */
     .corner { position: fixed; right: 12px; bottom: 10px; font-size: 12px; color: var(--muted); opacity: .9; }
     .footer-note { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%);
                    font-size: 13px; color: var(--muted); opacity: .9; text-align:center; padding: 0 12px; }
