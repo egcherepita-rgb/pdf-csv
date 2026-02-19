@@ -22,7 +22,7 @@ except Exception:
 
 app = FastAPI(
     title="PDF → CSV (артикул / наименование / всего / категория)",
-    version="4.3.0",
+    version="4.4.0",
 )
 
 # Static files (logo, etc.)
@@ -157,7 +157,7 @@ def get_counter() -> int:
 
 
 # -------------------------
-# Async jobs (progress) — FILE storage (OK with gunicorn -w 2)
+# Async jobs (progress) — FILE storage
 # -------------------------
 JOB_DIR = os.getenv("JOB_DIR", "/tmp/pdf2csv_jobs")
 JOB_TTL_SEC = int(os.getenv("JOB_TTL_SEC", str(30 * 60)))  # seconds
@@ -288,11 +288,6 @@ def money_to_number(line: str) -> int:
 
 
 def is_project_total_only(line: str, prev_line: str = "") -> bool:
-    """
-    Не путать цену позиции с итогом проекта.
-    1) Если предыдущая строка содержит "стоимость проекта" — считаем следующую сумму итогом.
-    2) Если строка выглядит как "NNN ₽" и сумма >= 10 000 — считаем итогом.
-    """
     if not RX_MONEY_LINE.fullmatch(normalize_space(line)):
         return False
     prev = normalize_space(prev_line).lower()
@@ -344,12 +339,6 @@ def clean_name_from_buffer(buf: List[str]) -> str:
 # Main parser
 # -------------------------
 def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
-    """
-    Поддерживает якоря:
-    A) В одной строке: price ₽ qty sum ₽
-    B) В разных строках: price ₽ -> qty -> sum ₽
-    C) В строке с весом/размерами цена "прилипла": ... кг. 75 ₽ -> qty -> sum ₽
-    """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     total_pages = doc.page_count
 
@@ -442,7 +431,7 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
                     i += 3
                     continue
 
-            # B) MULTILINE anchor: money -> qty -> money
+            # B) MULTILINE anchor
             if RX_MONEY_LINE.fullmatch(line):
                 end = min(len(lines), i + 8)
 
@@ -511,7 +500,7 @@ def make_csv_excel_friendly(rows: List[Tuple[str, int]]) -> bytes:
 
 
 # -------------------------
-# UI (centered upload row + fixed hero)
+# UI (NO scroll, centered, one-screen)
 # -------------------------
 HOME_HTML = """<!doctype html>
 <html lang="ru">
@@ -521,10 +510,19 @@ HOME_HTML = """<!doctype html>
   <title>PDF → CSV</title>
   <style>
     :root { --bg:#0b0f17; --card:#121a2a; --text:#e9eefc; --muted:#a8b3d6; --border:rgba(255,255,255,.08); --btn:#4f7cff; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-           background: radial-gradient(1200px 600px at 20% 10%, #18234a 0%, var(--bg) 55%); color: var(--text); }
 
-    /* HERO header (fixed, doesn't affect layout) */
+    /* ключевое: высота 100% + запрет скролла */
+    html, body { height: 100%; overflow: hidden; }
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin:0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 20% 10%, #18234a 0%, var(--bg) 55%);
+      color: var(--text);
+    }
+
+    /* HERO header (fixed) */
     .hero {
       position: fixed;
       top: 22px;
@@ -547,10 +545,25 @@ HOME_HTML = """<!doctype html>
       opacity: .95;
     }
 
-    .wrap { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding: 28px; padding-top: 170px; }
+    /* wrap = ровно один экран, padding учитывается (box-sizing) */
+    .wrap {
+      height: 100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding: 28px;
+      padding-top: 170px; /* место под шапку */
+    }
 
-    .card { width:min(900px, 100%); background: rgba(18,26,42,.92); border: 1px solid var(--border);
-            border-radius: 18px; padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
+    .card {
+      width:min(900px, 100%);
+      background: rgba(18,26,42,.92);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 22px;
+      box-shadow: 0 18px 60px rgba(0,0,0,.45);
+    }
+
     .top { display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
     h1 { margin:0; font-size: 28px; letter-spacing: .2px; }
     .hint { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
@@ -568,14 +581,32 @@ HOME_HTML = """<!doctype html>
       width: 100%;
     }
 
-    .file { display:flex; align-items:center; justify-content:center; gap:10px; padding: 10px 12px; border: 1px dashed var(--border);
-            border-radius: 14px; background: rgba(255,255,255,.02); }
-    button { padding: 10px 14px; border: 0; border-radius: 14px; cursor: pointer; font-weight: 800;
-             background: var(--btn); color: #0b1020; }
+    .file {
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:10px;
+      padding: 10px 12px;
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      background: rgba(255,255,255,.02);
+    }
+
+    button {
+      padding: 10px 14px;
+      border: 0;
+      border-radius: 14px;
+      cursor: pointer;
+      font-weight: 800;
+      background: var(--btn);
+      color: #0b1020;
+    }
     button:disabled { opacity: .55; cursor:not-allowed; }
+
     .status { margin-top: 14px; font-size: 14px; color: var(--muted); white-space: pre-wrap; text-align:center; }
     .status.ok { color: #79ffa8; }
     .status.err { color: #ff7b8a; }
+
     .help { margin-top: 16px; }
     .helphead { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
     .helptitle { font-weight: 700; color: var(--text); }
@@ -641,7 +672,7 @@ HOME_HTML = """<!doctype html>
   </div>
 
   <div class="corner" id="counter">…</div>
-  <div class="footer-note">Программа создана командой ПРОМЕТ для своих дилеров</div>
+  <div class="footer-note">Программа создана командой ПРОМЕТ</div>
 
   <div class="modal" id="modal" aria-hidden="true">
     <div class="modalcard">
@@ -725,7 +756,6 @@ HOME_HTML = """<!doctype html>
       }, 500);
 
       try {
-        // 1) стартуем async job
         const fd = new FormData();
         fd.append('file', f);
 
@@ -739,7 +769,6 @@ HOME_HTML = """<!doctype html>
         const data = await r.json();
         const job_id = data.job_id;
 
-        // 2) опрашиваем статус
         while (true) {
           const s = await fetch('/job/' + job_id);
           if (!s.ok) {
@@ -758,7 +787,6 @@ HOME_HTML = """<!doctype html>
           neutral(msg);
 
           if (j.status === 'done') {
-            // 3) скачиваем результат
             const dl = await fetch('/job/' + job_id + '/download');
             if (!dl.ok) {
               let text = await dl.text();
@@ -842,7 +870,6 @@ def instruction_video():
     return FileResponse(INSTRUCTION_VIDEO_PATH, media_type="video/mp4")
 
 
-# OLD endpoint (sync) — оставили для совместимости
 @app.post("/extract")
 async def extract(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
@@ -875,7 +902,6 @@ async def extract(file: UploadFile = File(...)):
     )
 
 
-# NEW async endpoints (progress)
 @app.post("/extract_async")
 async def extract_async(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
