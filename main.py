@@ -338,6 +338,32 @@ def clean_name_from_buffer(buf: List[str]) -> str:
 # -------------------------
 # Main parser
 # -------------------------
+def _finalize_item(
+    ordered: "OrderedDict[str, int]",
+    stats: Dict,
+    name: str,
+    qty: int,
+    anchor_type: str,
+) -> None:
+    """
+    qty=0 считаем валидным окончанием позиции, но в CSV не записываем.
+    Это нужно, чтобы позиции с нулевым количеством не склеивались со следующими.
+    """
+    if not name:
+        return
+    if not (0 <= qty <= 500):
+        return
+    if qty == 0:
+        return
+
+    ordered[name] = ordered.get(name, 0) + qty
+    stats["items_found"] += 1
+    if anchor_type == "inline":
+        stats["anchors_inline"] += 1
+    else:
+        stats["anchors_multiline"] += 1
+
+
 def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     total_pages = doc.page_count
@@ -391,23 +417,18 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
                 i += 1
                 continue
 
-            # A) INLINE anchor
+            # A) INLINE anchor: ... price ₽ qty sum ₽
             m = RX_PRICE_QTY_SUM.search(line)
             if m:
                 name = clean_name_from_buffer(buf)
                 buf.clear()
 
-                if name:
-                    try:
-                        qty = int(m.group("qty"))
-                    except Exception:
-                        qty = 0
+                try:
+                    qty = int(m.group("qty"))
+                except Exception:
+                    qty = -1
 
-                    if 1 <= qty <= 500:
-                        ordered[name] = ordered.get(name, 0) + qty
-                        stats["items_found"] += 1
-                        stats["anchors_inline"] += 1
-
+                _finalize_item(ordered, stats, name, qty, "inline")
                 i += 1
                 continue
 
@@ -417,21 +438,16 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
                     try:
                         qty = int(lines[i + 1])
                     except Exception:
-                        qty = 0
+                        qty = -1
 
-                    if 1 <= qty <= 500:
-                        name = clean_name_from_buffer(buf + [line])
-                        buf.clear()
-
-                        if name:
-                            ordered[name] = ordered.get(name, 0) + qty
-                            stats["items_found"] += 1
-                            stats["anchors_multiline"] += 1
+                    name = clean_name_from_buffer(buf + [line])
+                    buf.clear()
+                    _finalize_item(ordered, stats, name, qty, "multiline")
 
                     i += 3
                     continue
 
-            # B) MULTILINE anchor
+            # B) MULTILINE anchor: price ₽ -> qty -> sum ₽
             if RX_MONEY_LINE.fullmatch(line):
                 end = min(len(lines), i + 8)
 
@@ -439,7 +455,7 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
                 for j in range(i + 1, end):
                     if RX_INT.fullmatch(lines[j]):
                         q = int(lines[j])
-                        if 1 <= q <= 500:
+                        if 0 <= q <= 500:
                             qty_idx = j
                             break
 
@@ -462,12 +478,12 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
                 name = clean_name_from_buffer(buf)
                 buf.clear()
 
-                if name:
+                try:
                     qty = int(lines[qty_idx])
-                    ordered[name] = ordered.get(name, 0) + qty
-                    stats["items_found"] += 1
-                    stats["anchors_multiline"] += 1
+                except Exception:
+                    qty = -1
 
+                _finalize_item(ordered, stats, name, qty, "multiline")
                 i = sum_idx + 1
                 continue
 
