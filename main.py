@@ -22,7 +22,7 @@ except Exception:
 
 app = FastAPI(
     title="PDF → CSV (артикул / наименование / всего / категория)",
-    version="4.4.0",
+    version="4.5.0",
 )
 
 # Static files (logo, etc.)
@@ -38,6 +38,7 @@ RX_WEIGHT = re.compile(r"\b\d+(?:[.,]\d+)?\s*кг\.?\b", re.IGNORECASE)
 RX_MONEY_LINE = re.compile(r"^\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?\s*₽$")
 RX_INT = re.compile(r"^\d+$")
 RX_ANY_RUB = re.compile(r"₽")
+RX_ARTICLE = re.compile(r"\bS\d{11}\b")
 
 # В одной строке: "... 450 ₽ 2 900 ₽"
 RX_PRICE_QTY_SUM = re.compile(
@@ -79,19 +80,27 @@ def strip_dims_anywhere(name: str) -> str:
 # -------------------------
 # Артикулы (Art.xlsx)
 # -------------------------
-def load_article_map() -> Tuple[Dict[str, str], str]:
+def load_article_maps() -> Tuple[Dict[str, str], Dict[str, str], str]:
+    """
+    ARTICLE_MAP: normalized product name -> article.
+    ARTICLE_NAME_MAP: article -> canonical product name from Art.xlsx.
+    
+    The second map is used for the new offline configurator PDF, where the
+    article is already present in the report and the output name must stay
+    identical to the reference name from Art.xlsx.
+    """
     if openpyxl is None:
-        return {}, "openpyxl_not_installed"
+        return {}, {}, "openpyxl_not_installed"
 
     path = os.getenv("ART_XLSX_PATH", "Art.xlsx")
     if not os.path.exists(path):
-        return {}, f"file_not_found:{path}"
+        return {}, {}, f"file_not_found:{path}"
 
     try:
         wb = openpyxl.load_workbook(path, data_only=True)
         ws = wb[wb.sheetnames[0]]
     except Exception as e:
-        return {}, f"cannot_open:{e}"
+        return {}, {}, f"cannot_open:{e}"
 
     header = [normalize_space(ws.cell(1, c).value or "") for c in range(1, ws.max_column + 1)]
     товар_col = 1
@@ -102,7 +111,8 @@ def load_article_map() -> Tuple[Dict[str, str], str]:
         if h.lower() == "артикул":
             арт_col = idx
 
-    m: Dict[str, str] = {}
+    name_to_article: Dict[str, str] = {}
+    article_to_name: Dict[str, str] = {}
     for r in range(2, ws.max_row + 1):
         товар = ws.cell(r, товар_col).value
         арт = ws.cell(r, арт_col).value
@@ -112,12 +122,13 @@ def load_article_map() -> Tuple[Dict[str, str], str]:
         арт_s = normalize_space(str(арт))
         if not товар_s or not арт_s:
             continue
-        m[normalize_key(товар_s)] = арт_s
+        name_to_article[normalize_key(товар_s)] = арт_s
+        article_to_name[арт_s] = товар_s
 
-    return m, "ok"
+    return name_to_article, article_to_name, "ok"
 
 
-ARTICLE_MAP, ARTICLE_MAP_STATUS = load_article_map()
+ARTICLE_MAP, ARTICLE_NAME_MAP, ARTICLE_MAP_STATUS = load_article_maps()
 
 CATEGORY_VALUE = 2
 
@@ -335,6 +346,142 @@ def clean_name_from_buffer(buf: List[str]) -> str:
     return name
 
 
+
+# -------------------------
+# Offline configurator parser
+# -------------------------
+def is_offline_configurator_doc(doc: fitz.Document) -> bool:
+    """
+    New offline configurator report has a specification table with columns:
+    № / Артикул / Название / Цвет / Цена / Шт / Всего.
+    Old online report has columns Фото / Товар / Габариты / Вес / Цена за шт / Кол-во / Сумма.
+    """
+    max_pages = min(doc.page_count, 3)
+    txt = "\n".join((doc[i].get_text("text") or "") for i in range(max_pages))
+    low = normalize_space(txt).lower()
+    has_header = all(x in low for x in ["артикул", "название", "цвет", "цена", "шт", "всего"])
+    return bool(has_header and RX_ARTICLE.search(txt))
+
+
+def clean_offline_pdf_name(parts: List[str], article: str) -> str:
+    """Fallback name from PDF if article is absent in Art.xlsx."""
+    cleaned: List[str] = []
+    for idx, ln in enumerate(parts):
+        x = normalize_space(ln)
+        if not x:
+            continue
+        # remove row number and article from the first line of a position
+        if idx == 0:
+            x = re.sub(r"^\d+\s+", "", x)
+            x = RX_ARTICLE.sub("", x, count=1)
+            x = normalize_space(x)
+        if not x:
+            continue
+        if RX_MONEY_LINE.fullmatch(x) or RX_INT.fullmatch(x):
+            continue
+        if x.lower() in {"графит", "белый", "хром", "пластик", "черный", "пластик черный"}:
+            continue
+        cleaned.append(x)
+
+    name = normalize_space(" ".join(cleaned))
+    name = strip_dims_anywhere(name)
+    return name
+
+
+def parse_items_offline_doc(doc: fitz.Document) -> Tuple[List[Tuple[str, str, int]], Dict]:
+    """
+    Parser for the new offline configurator format.
+    It reads the article directly from the PDF (S + 11 digits), then takes the
+    quantity from the standard table sequence: price -> qty -> line sum.
+    Output name is the canonical name from Art.xlsx.
+    """
+    ordered: "OrderedDict[str, Dict[str, object]]" = OrderedDict()
+
+    stats = {
+        "parser": "offline",
+        "pages": 0,
+        "total_pages": doc.page_count,
+        "processed_pages": 0,
+        "items_found": 0,
+        "article_map_size": len(ARTICLE_MAP),
+        "article_name_map_size": len(ARTICLE_NAME_MAP),
+        "article_map_status": ARTICLE_MAP_STATUS,
+        "articles_missing_in_xlsx": [],
+    }
+
+    for page in doc:
+        stats["pages"] += 1
+        stats["processed_pages"] += 1
+
+        txt = page.get_text("text") or ""
+        if "₽" not in txt or not RX_ARTICLE.search(txt):
+            continue
+
+        lines = [normalize_space(x) for x in txt.splitlines()]
+        lines = [x for x in lines if x]
+        if not lines:
+            continue
+
+        article_indexes = [i for i, ln in enumerate(lines) if RX_ARTICLE.search(ln)]
+        for pos, idx in enumerate(article_indexes):
+            article_match = RX_ARTICLE.search(lines[idx])
+            if not article_match:
+                continue
+            article = article_match.group(0)
+
+            next_idx = article_indexes[pos + 1] if pos + 1 < len(article_indexes) else len(lines)
+            segment = lines[idx:next_idx]
+            # Keep the lookahead bounded: name/color/price/qty/sum are always close.
+            segment = segment[:14]
+
+            qty: Optional[int] = None
+
+            # Variant 1: a compact line contains "price ₽ qty sum ₽".
+            compact = normalize_space(" ".join(segment))
+            m_inline = RX_PRICE_QTY_SUM.search(compact)
+            if m_inline:
+                try:
+                    qty = int(m_inline.group("qty"))
+                except Exception:
+                    qty = None
+
+            # Variant 2: normal offline PDF extraction: price line -> qty line -> sum line.
+            if qty is None:
+                for j in range(0, max(0, len(segment) - 2)):
+                    if RX_MONEY_LINE.fullmatch(segment[j]) and RX_INT.fullmatch(segment[j + 1]) and RX_MONEY_LINE.fullmatch(segment[j + 2]):
+                        try:
+                            q = int(segment[j + 1])
+                            if 0 <= q <= 500:
+                                qty = q
+                                break
+                        except Exception:
+                            pass
+
+            if qty is None or qty <= 0:
+                continue
+
+            name = ARTICLE_NAME_MAP.get(article)
+            if not name:
+                name = clean_offline_pdf_name(segment, article)
+                if article not in stats["articles_missing_in_xlsx"]:
+                    stats["articles_missing_in_xlsx"].append(article)
+
+            if not name:
+                name = article
+
+            if article not in ordered:
+                ordered[article] = {"name": name, "qty": 0}
+            ordered[article]["qty"] = int(ordered[article]["qty"]) + qty
+            stats["items_found"] += 1
+
+    rows: List[Tuple[str, str, int]] = []
+    for article, data in ordered.items():
+        rows.append((article, str(data["name"]), int(data["qty"])))
+
+    stats["unique_items"] = len(rows)
+    return rows, stats
+
+
 # -------------------------
 # Main parser
 # -------------------------
@@ -364,14 +511,18 @@ def _finalize_item(
         stats["anchors_multiline"] += 1
 
 
-def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
+def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple], Dict]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     total_pages = doc.page_count
+
+    if is_offline_configurator_doc(doc):
+        return parse_items_offline_doc(doc)
 
     ordered: "OrderedDict[str, int]" = OrderedDict()
     buf: List[str] = []
 
     stats = {
+        "parser": "legacy",
         "pages": 0,
         "total_pages": total_pages,
         "processed_pages": 0,
@@ -496,7 +647,7 @@ def parse_items(pdf_bytes: bytes) -> Tuple[List[Tuple[str, int]], Dict]:
 # -------------------------
 # CSV output (Excel-friendly)
 # -------------------------
-def make_csv_excel_friendly(rows: List[Tuple[str, int]]) -> bytes:
+def make_csv_excel_friendly(rows: List[Tuple]) -> bytes:
     out = io.StringIO()
     writer = csv.writer(
         out,
@@ -508,8 +659,15 @@ def make_csv_excel_friendly(rows: List[Tuple[str, int]]) -> bytes:
 
     writer.writerow(["Артикул", "Наименование", "Всего", "Категория"])
 
-    for name, qty in rows:
-        art = ARTICLE_MAP.get(normalize_key(name), "")
+    for row in rows:
+        # Legacy parser returns (name, qty).
+        # Offline parser returns (article, canonical_name, qty).
+        if len(row) == 3:
+            art, name, qty = row
+            art = normalize_space(str(art)) or ARTICLE_MAP.get(normalize_key(str(name)), "")
+        else:
+            name, qty = row
+            art = ARTICLE_MAP.get(normalize_key(str(name)), "")
         writer.writerow([art, name, qty, CATEGORY_VALUE])
 
     return out.getvalue().encode("utf-8-sig")  # UTF-8 BOM
@@ -865,6 +1023,7 @@ def health():
     return {
         "status": "ok",
         "article_map_size": len(ARTICLE_MAP),
+        "article_name_map_size": len(ARTICLE_NAME_MAP),
         "article_map_status": ARTICLE_MAP_STATUS,
         "category_value": CATEGORY_VALUE,
         "instruction_video_exists": os.path.exists(INSTRUCTION_VIDEO_PATH),
